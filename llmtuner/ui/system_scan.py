@@ -132,7 +132,9 @@ class SystemScanTab(QWidget):
             ("Instruction Sets", cpu.instruction_sets),
         ]
         for i, (label, val) in enumerate(pairs):
-            grid.addWidget(*self._make_pair(label, val), i, 0, Qt.AlignLeft | Qt.AlignTop, i, 1)
+            lbl, v = self._make_pair(label, val)
+            grid.addWidget(lbl, i, 0, Qt.AlignLeft | Qt.AlignTop)
+            grid.addWidget(v, i, 1, Qt.AlignLeft)
 
         group.setLayout(grid)
         self._add_widget(group, 0, 0, 1, 2)
@@ -157,7 +159,9 @@ class SystemScanTab(QWidget):
                 ("Driver", gpu.driver_version),
             ]
             for i, (label, val) in enumerate(pairs):
-                grid.addWidget(*self._make_pair(label, val), i, 0, Qt.AlignLeft | Qt.AlignTop, i, 1)
+                lbl, v = self._make_pair(label, val)
+                grid.addWidget(lbl, i, 0, Qt.AlignLeft | Qt.AlignTop)
+                grid.addWidget(v, i, 1, Qt.AlignLeft)
 
             group.setLayout(grid)
             self._add_widget(group, idx + 1, 0, 1, 2)
@@ -189,7 +193,9 @@ class SystemScanTab(QWidget):
             ("Speed", f"{self.system_info.ram_speed_mhz} MHz" if self.system_info.ram_speed_mhz else "N/A"),
         ]
         for i, (label, val) in enumerate(pairs):
-            grid.addWidget(*self._make_pair(label, val), i, 0, Qt.AlignLeft | Qt.AlignTop, i, 1)
+            lbl, v = self._make_pair(label, val)
+            grid.addWidget(lbl, i, 0, Qt.AlignLeft | Qt.AlignTop)
+            grid.addWidget(v, i, 1, Qt.AlignLeft)
 
         group.setLayout(grid)
         self._add_widget(group, len(self.system_info.gpu) + 1, 2, 1, 2)
@@ -208,7 +214,9 @@ class SystemScanTab(QWidget):
             ("OS", f"{self.system_info.os_name} {self.system_info.os_arch}"),
         ]
         for i, (label, val) in enumerate(pairs):
-            grid.addWidget(*self._make_pair(label, val), i, 0, Qt.AlignLeft | Qt.AlignTop, i, 1)
+            lbl, v = self._make_pair(label, val)
+            grid.addWidget(lbl, i, 0, Qt.AlignLeft | Qt.AlignTop)
+            grid.addWidget(v, i, 1, Qt.AlignLeft)
 
         group.setLayout(grid)
         self._add_widget(group, len(self.system_info.gpu) + 2, 0, 1, 2)
