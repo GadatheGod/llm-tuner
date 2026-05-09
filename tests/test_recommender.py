@@ -120,7 +120,7 @@ def test_determine_max_params_low_vram():
     from llmtuner.core.recommender import _determine_max_params
     info = SystemInfo()
     gpu = GPUInfo()
-    gpu.vram_total_mb = 4096
+    gpu.vram_total_mb = 3072
     info.gpu = [gpu]
     assert _determine_max_params(info) == "4B"
 

@@ -1,5 +1,5 @@
 from typing import Dict, Optional, List
-from llmtuner.core.system_info import SystemInfo, GPUInfo
+from llmtuner.core.system_info import SystemInfo, GPUInfo, CPUInfo
 
 
 QUANT_SIZES = {
@@ -62,12 +62,9 @@ def recommend_config(
 
 
 def _configure_gpu(gpu: GPUInfo, params_raw: float, config: Dict, profile: str) -> Dict:
-    vram_mb = gpu.vram_free_mb or gpu.vram_total_mb
+    vram_mb = gpu.vram_total_mb or gpu.vram_free_mb
     if not vram_mb:
-        return _configure_cpu(config.get("cpu"), params_raw, config)
-
-    model_size_gb = params_raw * 0.4 / 1e9
-    model_size_mb = model_size_gb * 1024
+        return config
 
     if profile == "optimum":
         vram_budget = vram_mb * 0.85
@@ -78,44 +75,63 @@ def _configure_gpu(gpu: GPUInfo, params_raw: float, config: Dict, profile: str) 
 
     config["n_gpu_layers"] = -1
 
-    if gpu.vendor == "NVIDIA":
-        if gpu.compute_capability != "N/A":
-            cc = float(gpu.compute_capability.replace(".", ""))
-            config["flash_attention"] = cc >= 80
+    quant_multiplier = 0.4
+    model_size_mb = (params_raw * quant_multiplier / 1e9) * 1024
 
-    if model_size_mb * 0.5 > vram_budget:
-        config["quantization"] = "q4_k_m"
-    elif model_size_mb * 0.4 > vram_budget:
-        config["quantization"] = "q3_k_m"
+    if model_size_mb > vram_budget:
+        for q, mult in sorted(QUANT_SIZES.items(), key=lambda x: x[1]):
+            size = (params_raw * mult / 1e9) * 1024
+            if size <= vram_budget:
+                config["quantization"] = q
+                model_size_mb = size
+                break
+        else:
+            config["quantization"] = "q3_k_m"
+            model_size_mb = (params_raw * 0.28 / 1e9) * 1024
+    elif profile == "max_performance":
+        config["quantization"] = "q6_k"
+        model_size_mb = (params_raw * 0.6 / 1e9) * 1024
     else:
-        config["quantization"] = "q5_k_m" if profile != "optimum" else "q4_k_m"
+        config["quantization"] = "q5_k_m" if model_size_mb * 1.3 <= vram_budget else "q4_k_m"
 
-    ctx_mb_per_token = params_raw * 0.000001
-    max_ctx_tokens = (vram_budget - model_size_mb * 0.5) / ctx_mb_per_token
-    max_ctx_tokens = max(2048, min(int(max_ctx_tokens), 32768))
+    if gpu.vendor == "NVIDIA" and gpu.compute_capability != "N/A":
+        try:
+            cc = float(gpu.compute_capability)
+            config["flash_attention"] = cc >= 8.0
+        except ValueError:
+            pass
+
+    kv_cache_mb_per_token = (params_raw / 1e9) * 2.0 * 8 / 100
+    remaining_vram = vram_budget - model_size_mb
+    if kv_cache_mb_per_token > 0 and remaining_vram > 0:
+        max_ctx_tokens = int(remaining_vram / kv_cache_mb_per_token)
+    else:
+        max_ctx_tokens = 8192
+
+    max_ctx_tokens = max(2048, min(max_ctx_tokens, 32768))
 
     if profile == "max_performance":
         config["n_ctx"] = max(4096, _next_power_of_2(max_ctx_tokens))
     elif profile == "optimum":
-        config["n_ctx"] = min(8192, _next_power_of_2(max_ctx_tokens))
+        config["n_ctx"] = min(8192, max(4096, _next_power_of_2(max_ctx_tokens)))
     else:
-        config["n_ctx"] = _next_power_of_2(max_ctx_tokens)
+        config["n_ctx"] = max(4096, _next_power_of_2(max_ctx_tokens))
 
     config["n_batch"] = min(config["n_ctx"], 4096 if profile == "max_performance" else 2048)
     return config
 
 
-def _configure_cpu(cpu, params_raw: float, config: Dict) -> Dict:
+def _configure_cpu(cpu: CPUInfo, params_raw: float, config: Dict) -> Dict:
     config["n_gpu_layers"] = 0
     config["n_threads"] = max(2, cpu.physical_cores)
     config["n_threads_batch"] = max(2, cpu.logical_cores)
     config["n_ctx"] = 4096
     config["n_batch"] = 1024
-    config["quantization"] = "q4_k_m"
 
-    ram_gb = cpu.physical_cores * 2 if hasattr(cpu, 'physical_cores') else 4
     if params_raw > 8e9:
         config["quantization"] = "q3_k_m"
+    else:
+        config["quantization"] = "q4_k_m"
     return config
 
 
@@ -136,6 +152,8 @@ def _apply_profile(config: Dict, profile: str, params_raw: float, use_case: str)
         config["n_ctx"] = max(config["n_ctx"], 8192)
     elif use_case == "rag":
         config["n_ctx"] = max(config["n_ctx"], 16384)
+    elif use_case in ("roleplay", "creative_writing"):
+        config["n_ctx"] = max(config["n_ctx"], 8192)
     return config
 
 
@@ -148,11 +166,18 @@ def _upgrade_quant(q: str) -> str:
 
 
 def _parse_params(params: str) -> float:
+    if not params:
+        return 8e9
+    import re
+    match = re.search(r'(\d+\.?\d*)', params)
+    if not match:
+        return 8e9
+    val = float(match.group(1))
     if "b" in params.lower():
-        return float(params.replace("B", "").replace("b", "")) * 1e9
+        return val * 1e9
     elif "m" in params.lower():
-        return float(params.replace("M", "").replace("m", "")) * 1e6
-    return int(params) * 1e9
+        return val * 1e6
+    return val * 1e9
 
 
 def _next_power_of_2(n: int) -> int:
@@ -175,7 +200,7 @@ def recommend_models(
     cat = cat_map.get(use_case, {})
 
     max_params = _determine_max_params(system)
-    models = _get_local_models(categories=[use_case], max_params=max_params, limit=top * 2)
+    models = _get_local_models(categories=[use_case], max_params=max_params, limit=top * 3)
     scored = []
     for m in models:
         score = _score_model(m, system, cat)
@@ -194,7 +219,7 @@ def _determine_max_params(system: SystemInfo) -> str:
             return "16B"
         elif vram >= 6000:
             return "9B"
-        elif vram >= 6000:
+        elif vram >= 4000:
             return "8B"
         else:
             return "4B"
@@ -245,7 +270,7 @@ def _explain_score(score: float, model: Dict, system: SystemInfo) -> str:
     if gpu:
         vram = gpu.vram_total_mb
         size = model.get("size_bytes", {}).get("q4_k_m", 0)
-        if size <= vram * 1024 * 0.7:
+        if size and size <= vram * 1024 * 0.7:
             reasons.append("Fits in VRAM (Q4)")
         else:
             reasons.append("May need smaller quant or CPU offload")

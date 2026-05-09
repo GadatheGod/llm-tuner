@@ -6,7 +6,21 @@ from PySide6.QtWidgets import (
 from PySide6.QtCore import Qt, Signal, QTimer
 from PySide6.QtGui import QFont
 from llmtuner.core.recommender import recommend_config
+from llmtuner.core.model_db import get_model_details
 from llmtuner.core.system_info import SystemInfo
+import re
+
+
+def _infer_params_from_name(model_data: dict) -> str:
+    for field in ["name", "id"]:
+        text = str(model_data.get(field, ""))
+        match = re.search(r'(\d+\.?\d*)[Bb]', text)
+        if match:
+            val = match.group(1)
+            if "." in val:
+                return f"{val}B"
+            return f"{int(float(val))}B"
+    return ""
 
 
 class ConfigPanelTab(QWidget):
@@ -120,6 +134,12 @@ class ConfigPanelTab(QWidget):
     def update_recommendation(self, system_info: SystemInfo, model_data: dict):
         self.system_info = system_info
         self.selected_model = model_data
+
+        details = get_model_details(model_data.get("id", ""))
+        if details:
+            model_data.update(details)
+            self.selected_model = model_data
+
         self._regenerate()
 
     def set_model_path(self, path: str):
@@ -135,7 +155,14 @@ class ConfigPanelTab(QWidget):
         profile_name = profile_names[profile]
 
         use_case = self.use_case_combo.currentData() or "chat"
-        model_params = self.selected_model.get("params", "8B") if self.selected_model else "8B"
+
+        model_params = "8B"
+        if self.selected_model:
+            model_params = self.selected_model.get("params", "")
+            if not model_params:
+                model_params = _infer_params_from_name(self.selected_model)
+            if not model_params:
+                model_params = "8B"
 
         try:
             config = recommend_config(
@@ -190,12 +217,19 @@ class ConfigPanelTab(QWidget):
         if self.system_info:
             lines.append(f"CPU: {self.system_info.cpu.model}")
             lines.append(f"Cores: {self.system_info.cpu.physical_cores}P / {self.system_info.cpu.logical_cores}L")
+            lines.append(f"L3 Cache: {self.system_info.cpu.l3_cache_kb / 1024:.1f} MB" if self.system_info.cpu.l3_cache_kb else "L3 Cache: N/A")
+            lines.append(f"ISA: {self.system_info.cpu.instruction_sets}")
             if self.system_info.gpu:
                 g = self.system_info.gpu[0]
-                lines.append(f"GPU: {g.model} ({g.vram_total_mb} MB VRAM)")
+                lines.append(f"GPU: {g.model} ({g.architecture})")
+                lines.append(f"VRAM: {g.vram_total_mb} MB")
+                if g.compute_capability != "N/A":
+                    lines.append(f"Compute Cap: {g.compute_capability}")
             else:
                 lines.append("GPU: None (CPU inference)")
-            lines.append(f"RAM: {self.system_info.ram_total_gb} GB")
+            lines.append(f"RAM: {self.system_info.ram_total_gb} GB ({self.system_info.ram_type})")
+            lines.append(f"PCIe: {self.system_info.pcie_version}")
+            lines.append(f"Disk: {self.system_info.disk_type} ({self.system_info.disk_free_gb} GB free)")
         self.summary_tab.setPlainText("\n".join(lines))
 
     def _show_placeholder(self):
