@@ -1,11 +1,13 @@
 from PySide6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QLabel, QPushButton,
-    QProgressBar, QGroupBox, QFormLayout, QTextEdit,
-    QLineEdit, QFileDialog, QFrame, QSizePolicy
+    QProgressBar, QGroupBox, QTextEdit,
+    QLineEdit, QFileDialog, QRadioButton, QButtonGroup, QSizePolicy
 )
 from PySide6.QtCore import Qt, QTimer, Signal
-from PySide6.QtGui import QFont, QColor
+from PySide6.QtGui import QFont
 from llmtuner.core.benchmark_runner import BenchmarkRunner, BenchmarkResult
+from llmtuner.core.config_export import export_llama_cpp_config, export_ollama_modelfile
+from llmtuner.utils.persistence import set_pref, get_pref
 
 
 class BenchmarkTab(QWidget):
@@ -15,6 +17,9 @@ class BenchmarkTab(QWidget):
         super().__init__()
         self.model_path = ""
         self.llama_path = ""
+        self.ollama_path = ""
+        self.current_config = None
+        self.selected_engine = "llama.cpp"
         self.runner = BenchmarkRunner(on_progress=self._on_progress)
         self._build_ui()
 
@@ -22,42 +27,90 @@ class BenchmarkTab(QWidget):
         layout = QVBoxLayout()
         layout.setSpacing(10)
 
-        model_section = QGroupBox("Model")
-        model_layout = QHBoxLayout()
+        # Engine selector
+        engine_group = QGroupBox("Engine")
+        engine_layout = QHBoxLayout()
+        self.engine_grp = QButtonGroup()
+        self.llama_radio = QRadioButton("llama.cpp")
+        self.llama_radio.setChecked(True)
+        self.llama_radio.toggled.connect(self._on_engine_change)
+        self.ollama_radio = QRadioButton("Ollama")
+        self.ollama_radio.toggled.connect(self._on_engine_change)
+        self.engine_grp.addButton(self.llama_radio)
+        self.engine_grp.addButton(self.ollama_radio)
+        engine_layout.addWidget(self.llama_radio)
+        engine_layout.addWidget(self.ollama_radio)
+        engine_layout.addStretch()
+        engine_group.setLayout(engine_layout)
+        layout.addWidget(engine_group)
+
+        # Paths
+        paths_group = QGroupBox("Paths")
+        paths_layout = QVBoxLayout()
+        paths_layout.setSpacing(6)
+
+        # Model path
+        model_row = QHBoxLayout()
+        model_row.addWidget(QLabel("Model:"))
         self.model_path_edit = QLineEdit()
         self.model_path_edit.setPlaceholderText("Path to .gguf model file...")
-        self.model_path_edit.setMinimumWidth(400)
-        model_layout.addWidget(self.model_path_edit)
+        model_row.addWidget(self.model_path_edit, 1)
+        self.browse_model_btn = QPushButton("Browse")
+        self.browse_model_btn.clicked.connect(self._browse_model)
+        model_row.addWidget(self.browse_model_btn)
+        paths_layout.addLayout(model_row)
 
-        self.browse_btn = QPushButton("Browse")
-        self.browse_btn.clicked.connect(self._browse_model)
-        model_layout.addWidget(self.browse_btn)
-        model_section.setLayout(model_layout)
-        layout.addWidget(model_section)
+        # Engine path
+        engine_row = QHBoxLayout()
+        engine_row.addWidget(QLabel("Engine:"))
+        self.engine_path_edit = QLineEdit()
+        self.engine_path_edit.setPlaceholderText("Path to llama-cli.exe or ollama...")
+        engine_row.addWidget(self.engine_path_edit, 1)
+        self.browse_engine_btn = QPushButton("Browse")
+        self.browse_engine_btn.clicked.connect(self._browse_engine)
+        engine_row.addWidget(self.browse_engine_btn)
+        auto_detect_btn = QPushButton("Auto-Detect")
+        auto_detect_btn.clicked.connect(self._auto_detect_paths)
+        engine_row.addWidget(auto_detect_btn)
+        paths_layout.addLayout(engine_row)
 
-        engine_section = QGroupBox("Engine")
-        engine_layout = QHBoxLayout()
-
-        self.llama_btn = QPushButton("Run llama.cpp Benchmark")
-        self.llama_btn.clicked.connect(self._run_llama_bench)
-        self.llama_btn.setEnabled(False)
-        engine_layout.addWidget(self.llama_btn)
-
+        # Ollama model name
+        ollama_row = QHBoxLayout()
+        ollama_row.addWidget(QLabel("Ollama Name:"))
         self.ollama_name_edit = QLineEdit()
         self.ollama_name_edit.setPlaceholderText("Ollama model name (e.g., llama3)")
-        engine_layout.addWidget(self.ollama_name_edit)
+        ollama_row.addWidget(self.ollama_name_edit, 1)
+        self.ollama_name_edit.hide()
+        paths_layout.addLayout(ollama_row)
 
-        self.ollama_btn = QPushButton("Run Ollama Benchmark")
-        self.ollama_btn.clicked.connect(self._run_ollama_bench)
-        engine_layout.addWidget(self.ollama_btn)
+        paths_group.setLayout(paths_layout)
+        layout.addWidget(paths_group)
+
+        # Run buttons
+        run_group = QGroupBox("Run Benchmark")
+        run_layout = QHBoxLayout()
+        self.run_btn = QPushButton("Run Benchmark")
+        self.run_btn.clicked.connect(self._run_benchmark)
+        self.run_btn.setEnabled(False)
+        self.run_btn.setStyleSheet("""
+            QPushButton { background: #2d5f8a; padding: 10px 24px;
+                font-weight: bold; font-size: 13px; border-radius: 4px; }
+            QPushButton:hover { background: #3a7cb8; }
+        """)
+        run_layout.addWidget(self.run_btn)
 
         self.cancel_btn = QPushButton("Cancel")
         self.cancel_btn.clicked.connect(self._cancel)
         self.cancel_btn.setEnabled(False)
-        engine_layout.addWidget(self.cancel_btn)
+        run_layout.addWidget(self.cancel_btn)
 
-        engine_section.setLayout(engine_layout)
-        layout.addWidget(engine_section)
+        self.accuracy_btn = QPushButton("Run Accuracy Test (20 Q&A)")
+        self.accuracy_btn.clicked.connect(self._run_accuracy)
+        self.accuracy_btn.setEnabled(False)
+        run_layout.addWidget(self.accuracy_btn)
+        run_layout.addStretch()
+        run_group.setLayout(run_layout)
+        layout.addWidget(run_group)
 
         self.progress = QProgressBar()
         self.progress.setTextVisible(True)
@@ -70,6 +123,7 @@ class BenchmarkTab(QWidget):
         self.progress_label.hide()
         layout.addWidget(self.progress_label)
 
+        # Results
         results_frame = QGroupBox("Results")
         results_layout = QVBoxLayout()
 
@@ -92,10 +146,19 @@ class BenchmarkTab(QWidget):
         self.metrics_bar.addStretch()
         results_layout.addLayout(self.metrics_bar)
 
-        self.accuracy_btn = QPushButton("Run Accuracy Test (20 Q&A)")
-        self.accuracy_btn.clicked.connect(self._run_accuracy)
-        self.accuracy_btn.setEnabled(False)
-        results_layout.addWidget(self.accuracy_btn)
+        # Export button
+        export_row = QHBoxLayout()
+        self.export_btn = QPushButton("Export Config & Launch")
+        self.export_btn.clicked.connect(self._export_and_launch)
+        self.export_btn.setEnabled(False)
+        self.export_btn.setStyleSheet("""
+            QPushButton { background: #27ae60; padding: 8px 16px;
+                font-weight: bold; border-radius: 4px; }
+            QPushButton:hover { background: #2ecc71; }
+        """)
+        export_row.addWidget(self.export_btn)
+        export_row.addStretch()
+        results_layout.addLayout(export_row)
         results_layout.addStretch()
         results_frame.setLayout(results_layout)
         layout.addWidget(results_frame)
@@ -105,18 +168,37 @@ class BenchmarkTab(QWidget):
         self.output_box.setPlaceholderText("Benchmark output will appear here...")
         self.output_box.setFont(QFont("Consolas", 9))
         self.output_box.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
-        layout.addWidget(self.output_box)
+        layout.addWidget(self.output_box, 1)
 
         self.setLayout(layout)
+
+    def update_config(self, config: dict):
+        self.current_config = config
+        if config:
+            if config.get("model_path"):
+                self.model_path = config["model_path"]
+                self.model_path_edit.setText(config["model_path"])
+            if config.get("llama_cpp_path"):
+                self.llama_path = config["llama_cpp_path"]
+                self.engine_path_edit.setText(self.llama_path)
+            self.run_btn.setEnabled(True)
 
     def set_model_path(self, path: str):
         self.model_path = path
         self.model_path_edit.setText(path)
-        self.llama_btn.setEnabled(True)
+        self.run_btn.setEnabled(True)
 
     def set_llama_cpp_path(self, path: str):
         self.llama_path = path
+        self.engine_path_edit.setText(path)
         self.runner.set_llama_cpp_path(path)
+
+    def _on_engine_change(self):
+        self.selected_engine = "llama.cpp" if self.llama_radio.isChecked() else "ollama"
+        if self.selected_engine == "ollama":
+            self.ollama_name_edit.show()
+        else:
+            self.ollama_name_edit.hide()
 
     def _browse_model(self):
         path, _ = QFileDialog.getOpenFileName(
@@ -126,68 +208,140 @@ class BenchmarkTab(QWidget):
         if path:
             self.set_model_path(path)
 
+    def _browse_engine(self):
+        if self.selected_engine == "llama.cpp":
+            path, _ = QFileDialog.getOpenFileName(
+                self, "Select llama-cli", "",
+                "Executables (*.exe);;All Files (*)"
+            )
+            if path:
+                self.llama_path = path
+                self.engine_path_edit.setText(path)
+                self.runner.set_llama_cpp_path(path)
+                set_pref("llama_cpp_path", path)
+        else:
+            path, _ = QFileDialog.getOpenFileName(
+                self, "Select ollama", "",
+                "Executables (*.exe);;All Files (*)"
+            )
+            if path:
+                self.ollama_path = path
+                self.engine_path_edit.setText(path)
+                set_pref("ollama_path", path)
+
+    def _auto_detect_paths(self):
+        import shutil
+        detected = []
+        # Auto-detect llama.cpp
+        llama_path = get_pref("llama_cpp_path", "")
+        if not llama_path:
+            for name in ["llama-cli", "llama-cli.exe", "main"]:
+                found = shutil.which(name)
+                if found:
+                    llama_path = found
+                    break
+            if not llama_path:
+                import os
+                common = [
+                    os.path.expanduser("~/.llm-tuner/bin/llama-cli"),
+                    os.path.join(os.environ.get("LOCALAPPDATA", ""), "llama.cpp/llama-cli.exe"),
+                ]
+                for p in common:
+                    if os.path.isfile(p):
+                        llama_path = p
+                        break
+        if llama_path:
+            self.llama_path = llama_path
+            if self.selected_engine == "llama.cpp":
+                self.engine_path_edit.setText(llama_path)
+                self.runner.set_llama_cpp_path(llama_path)
+            detected.append(f"llama.cpp: {llama_path}")
+
+        # Auto-detect ollama
+        ollama_path = get_pref("ollama_path", "")
+        if not ollama_path:
+            found = shutil.which("ollama")
+            if found:
+                ollama_path = found
+            else:
+                import os
+                ollama_common = os.path.join(os.environ.get("LOCALAPPDATA", ""), "Programs/ollama/ollama.exe")
+                if os.path.isfile(ollama_common):
+                    ollama_path = ollama_common
+        if ollama_path:
+            self.ollama_path = ollama_path
+            if self.selected_engine == "ollama":
+                self.engine_path_edit.setText(ollama_path)
+            detected.append(f"ollama: {ollama_path}")
+
+        if detected:
+            self.output_box.append("\n=== Auto-Detect Results ===\n" + "\n".join(detected))
+        else:
+            self.output_box.append("\nNo engines found. Download llama.cpp or Ollama first.")
+
+    def _run_benchmark(self):
+        self._start_bench()
+        try:
+            if self.selected_engine == "llama.cpp":
+                self._run_llama_bench()
+            else:
+                self._run_ollama_bench()
+        except Exception as e:
+            self.output_box.append(f"Error: {e}")
+        finally:
+            self._end_bench()
+
     def _run_llama_bench(self):
         model_path = self.model_path_edit.text().strip()
         if not model_path:
             self.output_box.append("Please select a model file first.")
             return
 
-        from llmtuner.utils.persistence import get_pref
-        llama_path = get_pref("llama_cpp_path", "")
+        llama_path = self.engine_path_edit.text().strip()
         if llama_path:
             self.runner.set_llama_cpp_path(llama_path)
+        else:
+            saved = get_pref("llama_cpp_path", "")
+            if saved:
+                self.runner.set_llama_cpp_path(saved)
 
-        self._start_bench()
-        try:
-            config = {
-                "n_threads": 8,
-                "n_ctx": 4096,
-                "n_batch": 2048,
-                "n_predict": 256,
-                "n_gpu_layers": 0,
-                "flash_attention": False,
-            }
-            result = self.runner.run_llama_cpp_benchmark(model_path, config)
-            self._show_result(result)
-        except Exception as e:
-            self.output_box.append(f"Error: {e}")
-        finally:
-            self._end_bench()
+        config = self.current_config or {
+            "n_threads": 8,
+            "n_ctx": 4096, "n_batch": 2048, "n_predict": 256,
+            "n_gpu_layers": 0, "flash_attention": False,
+        }
+        config["n_threads"] = config.get("n_threads", 8)
+        result = self.runner.run_llama_cpp_benchmark(model_path, config)
+        self._show_result(result)
 
     def _run_ollama_bench(self):
         model_name = self.ollama_name_edit.text().strip()
         if not model_name:
             self.output_box.append("Please enter an Ollama model name (e.g., llama3).")
             return
-
-        self._start_bench()
-        try:
-            result = self.runner.run_ollama_benchmark(model_name)
-            self._show_result(result)
-        except Exception as e:
-            self.output_box.append(f"Error: {e}")
-        finally:
-            self._end_bench()
+        result = self.runner.run_ollama_benchmark(model_name)
+        self._show_result(result)
 
     def _run_accuracy(self):
         model_path = self.model_path_edit.text().strip()
         if not model_path:
             self.output_box.append("No model loaded for accuracy test.")
             return
-
-        from llmtuner.core.benchmark_runner import BenchmarkResult
+        config = self.current_config or {}
         result = BenchmarkResult(model=model_path, engine="llama.cpp")
-        result.config = {
-            "n_threads": int(self.tps_label.text().split()[-1] if "Threads" in self.tps_label.text() else "8"),
-        }
-
+        result.config = config
         self._start_bench()
         self.progress.setFormat("Running accuracy test...")
         try:
             result = self.runner.run_accuracy_test(result)
-            self.accuracy_label.setText(f"Accuracy: {result.accuracy_score:.0f}% ({result.accuracy_correct}/{result.accuracy_total})")
-            self.output_box.append(f"\n=== Accuracy Test ===")
-            self.output_box.append(f"Score: {result.accuracy_score:.1f}% ({result.accuracy_correct}/{result.accuracy_total} correct)")
+            self.accuracy_label.setText(
+                f"Accuracy: {result.accuracy_score:.0f}% ({result.accuracy_correct}/{result.accuracy_total})"
+            )
+            self.output_box.append(
+                f"\n=== Accuracy Test ===\n"
+                f"Score: {result.accuracy_score:.1f}% "
+                f"({result.accuracy_correct}/{result.accuracy_total} correct)"
+            )
         except Exception as e:
             self.output_box.append(f"Accuracy test error: {e}")
         finally:
@@ -201,10 +355,8 @@ class BenchmarkTab(QWidget):
             self.tps_label.setText(f"Tokens/s: {result.tokens_per_second:.1f}")
             self.ptps_label.setText(f"Prompt tok/s: {result.prompt_tokens_per_second:.1f}")
             self.load_time_label.setText(f"Load: {result.load_time_ms:.0f}ms")
-
             color = "#27ae60" if result.tokens_per_second > 30 else "#e67e22" if result.tokens_per_second > 10 else "#e74c3c"
             self.tps_label.setStyleSheet(f"font-size: 18px; font-weight: bold; color: {color};")
-
             self.output_box.append(f"\n=== Benchmark Result ===")
             self.output_box.append(f"Model: {result.model}")
             self.output_box.append(f"Engine: {result.engine}")
@@ -214,23 +366,44 @@ class BenchmarkTab(QWidget):
             self.output_box.append(f"Load time: {result.load_time_ms:.1f}ms")
             if result.raw_output:
                 self.output_box.append(f"\n--- Raw Output ---\n{result.raw_output[-2000:]}")
-
         self.accuracy_btn.setEnabled(True)
+        self.export_btn.setEnabled(True)
         self.result_ready.emit(result)
+
+    def _export_and_launch(self):
+        if not self.current_config:
+            self.output_box.append("No configuration to export.")
+            return
+        model_path = self.model_path_edit.text().strip()
+        if not model_path:
+            self.output_box.append("Please set a model path first.")
+            return
+        try:
+            import os
+            base_name = os.path.splitext(os.path.basename(model_path))[0]
+            if self.selected_engine == "llama.cpp":
+                out_path = f"{base_name}_run.bat"
+                export_llama_cpp_config(out_path, self.current_config, model_path)
+                self.output_box.append(f"Exported: {out_path}")
+            else:
+                out_path = f"{base_name}.Modelfile"
+                export_ollama_modelfile(out_path, self.current_config, model_path)
+                self.output_box.append(f"Exported: {out_path}")
+            self.output_box.append("Config exported successfully!")
+        except Exception as e:
+            self.output_box.append(f"Export error: {e}")
 
     def _start_bench(self):
         self.progress.show()
         self.progress_label.show()
         self.progress_label.setText("Running benchmark...")
-        self.llama_btn.setEnabled(False)
-        self.ollama_btn.setEnabled(False)
+        self.run_btn.setEnabled(False)
         self.cancel_btn.setEnabled(True)
 
     def _end_bench(self):
         self.progress.hide()
         self.progress_label.hide()
-        self.llama_btn.setEnabled(True)
-        self.ollama_btn.setEnabled(True)
+        self.run_btn.setEnabled(True)
         self.cancel_btn.setEnabled(False)
 
     def _on_progress(self, msg: str):

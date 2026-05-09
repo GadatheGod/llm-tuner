@@ -33,7 +33,7 @@ def test_recommender_gpu_nvidia():
     info.ram_total_gb = 32
 
     config = recommend_config(info, "8B", "chat", "balanced")
-    assert config["n_gpu_layers"] == -1
+    assert config["n_gpu_layers"] > 0
     assert config["n_ctx"] >= 2048
     assert config["n_batch"] > 0
 

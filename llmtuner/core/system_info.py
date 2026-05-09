@@ -53,6 +53,16 @@ class SystemInfo:
     disk_type: str = "Unknown"
     disk_model: str = "Unknown"
     pcie_version: str = "N/A"
+    bios_vendor: str = "Unknown"
+    bios_version: str = "Unknown"
+    bios_date: str = "Unknown"
+    display_resolution: str = "N/A"
+    display_bits: str = "N/A"
+    display_hz: str = "N/A"
+    sound_device: str = "None"
+    network_adapter: str = "Unknown"
+    network_speed: str = "Unknown"
+    network_ipv4: str = "Unknown"
 
     def __post_init__(self):
         if self.gpu is None:
@@ -426,3 +436,86 @@ def scan_system() -> SystemInfo:
     sysinfo.pcie_version = get_pcie_version()
 
     return sysinfo
+
+
+def get_bios_info() -> dict:
+    try:
+        result = subprocess.run(
+            ["powershell", "-Command",
+             "$bios = Get-CimInstance Win32_BIOS | Select-Object -First 1 Manufacturer,SMBIOSBIOSVersion,ReleaseDate; "
+             "$bios | ConvertTo-Json"],
+            capture_output=True, text=True, timeout=5
+        )
+        data = json.loads(result.stdout.strip())
+        return {
+            "vendor": data.get("Manufacturer", "Unknown"),
+            "version": data.get("SMBIOSBIOSVersion", "Unknown"),
+            "date": data.get("ReleaseDate", "Unknown"),
+        }
+    except Exception:
+        return {"vendor": "Unknown", "version": "Unknown", "date": "Unknown"}
+
+
+def get_display_info() -> dict:
+    try:
+        result = subprocess.run(
+            ["powershell", "-Command",
+             "$disp = Get-CimInstance Win32_DesktopMonitor | Select-Object -First 1; "
+             "$screen = Get-CimInstance Win32_VideoController | Select-Object -First 1; "
+             "$res = $screen.Name; "
+             "$bits = $screen.CurrentHorizontalResolution + 'x' + $screen.CurrentVerticalResolution; "
+             "$hz = $screen.CurrentRefreshRate; "
+             "$r = @{'resolution'=$bits;'bits'='32 bit';'hz'=$hz}; $r | ConvertTo-Json"],
+            capture_output=True, text=True, timeout=5
+        )
+        data = json.loads(result.stdout.strip())
+        return {
+            "resolution": data.get("resolution", "N/A"),
+            "bits": data.get("bits", "N/A"),
+            "hz": str(data.get("hz", "N/A")),
+        }
+    except Exception:
+        return {"resolution": "N/A", "bits": "N/A", "hz": "N/A"}
+
+
+def get_sound_info() -> str:
+    try:
+        result = subprocess.run(
+            ["powershell", "-Command",
+             "$audio = Get-CimInstance Win32_SoundDevice | Select-Object -First 1 -ExpandProperty Name; Write-Output $audio"],
+            capture_output=True, text=True, timeout=5
+        )
+        name = result.stdout.strip()
+        return name if name else "None detected"
+    except Exception:
+        return "None detected"
+
+
+def get_network_info() -> dict:
+    try:
+        result = subprocess.run(
+            ["powershell", "-Command",
+             "$nic = Get-CimInstance Win32_NetworkAdapter | Where-Object { $_.NetConnectionStatus -eq 2 -and $_.NetEnabled -eq $true } | Select-Object -First 1; "
+             "$cfg = Get-CimInstance Win32_NetworkAdapterConfiguration | Where-Object { $_.IPEnabled -eq $true -and $_.DHCPEnabled -eq $true } | Select-Object -First 1; "
+             "$n = @{'name'=$nic.Name;'speed'=$nic.Speed;'ipv4'=$cfg.IPAddress[0]}; $n | ConvertTo-Json"],
+            capture_output=True, text=True, timeout=5
+        )
+        data = json.loads(result.stdout.strip())
+        speed = data.get("speed", 0)
+        speed_str = "Unknown"
+        if speed:
+            try:
+                speed_val = int(speed) if not isinstance(speed, int) else speed
+                if speed_val >= 1000000000:
+                    speed_str = f"{speed_val // 1000000000} Gbps"
+                elif speed_val >= 1000000:
+                    speed_str = f"{speed_val // 1000000} Mbps"
+            except (ValueError, TypeError):
+                pass
+        return {
+            "name": data.get("name", "Unknown"),
+            "speed": speed_str,
+            "ipv4": data.get("ipv4", "Unknown"),
+        }
+    except Exception:
+        return {"name": "Unknown", "speed": "Unknown", "ipv4": "Unknown"}

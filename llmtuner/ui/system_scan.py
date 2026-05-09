@@ -1,9 +1,8 @@
 from PySide6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QLabel, QPushButton,
-    QProgressBar, QGroupBox, QGridLayout, QFrame, QTextEdit
+    QProgressBar, QGroupBox, QGridLayout, QScrollArea
 )
 from PySide6.QtCore import Qt, QTimer, Signal
-from llmtuner.core.system_info import scan_system, SystemInfo
 
 
 class SystemScanTab(QWidget):
@@ -18,15 +17,13 @@ class SystemScanTab(QWidget):
         layout = QVBoxLayout()
         layout.setSpacing(10)
 
+        # Top bar
         top_bar = QHBoxLayout()
         self.scan_btn = QPushButton("Scan System")
         self.scan_btn.setStyleSheet("""
             QPushButton {
-                background: #27ae60;
-                border: none;
-                padding: 8px 24px;
-                font-weight: bold;
-                font-size: 13px;
+                background: #27ae60; border: none; padding: 8px 24px;
+                font-weight: bold; font-size: 13px; border-radius: 4px;
             }
             QPushButton:hover { background: #2ecc71; }
         """)
@@ -47,10 +44,18 @@ class SystemScanTab(QWidget):
         self.progress.hide()
         layout.addWidget(self.progress)
 
-        self.content_area = QGridLayout()
-        self.content_area.setSpacing(12)
-        layout.addLayout(self.content_area)
-        layout.addStretch()
+        # Scrollable content area
+        scroll = QScrollArea()
+        scroll.setWidgetResizable(True)
+        scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAsNeeded)
+        scroll.setVerticalScrollBarPolicy(Qt.ScrollBarAsNeeded)
+
+        self.scroll_content = QWidget()
+        self.scroll_layout = QVBoxLayout(self.scroll_content)
+        self.scroll_layout.setSpacing(10)
+        self.scroll_layout.addStretch()
+        scroll.setWidget(self.scroll_content)
+        layout.addWidget(scroll, 1)
 
         self.setLayout(layout)
 
@@ -59,20 +64,28 @@ class SystemScanTab(QWidget):
         self.scan_label.setText("Scanning...")
         self.progress.show()
         self.progress.setValue(0)
-
         QTimer.singleShot(50, self._do_scan)
 
     def _do_scan(self):
+        # Clear all previous groups
+        while self.scroll_layout.count() > 0:
+            item = self.scroll_layout.takeAt(0)
+            if item.widget():
+                item.widget().deleteLater()
+
         self.progress.setValue(10)
         from llmtuner.core.system_info import get_cpu_info
+        self.system_info = None  # Reset
+        from llmtuner.core.system_info import SystemInfo
         self.system_info = SystemInfo()
         self.system_info.cpu = get_cpu_info()
-        self._update_cpu_section()
+        self._add_group(self._make_cpu_group())
 
         self.progress.setValue(30)
         from llmtuner.core.system_info import get_gpu_info
         self.system_info.gpu = get_gpu_info()
-        self._update_gpu_section()
+        for g in self._make_gpu_groups():
+            self._add_group(g)
 
         self.progress.setValue(50)
         from llmtuner.core.system_info import get_ram_info, get_disk_info, get_ram_speed, get_ram_type
@@ -82,7 +95,7 @@ class SystemScanTab(QWidget):
         self.system_info.ram_used_gb = round(used, 1)
         self.system_info.ram_speed_mhz = get_ram_speed()
         self.system_info.ram_type = get_ram_type()
-        self._update_ram_section()
+        self._add_group(self._make_ram_group())
 
         self.progress.setValue(70)
         import platform
@@ -94,32 +107,57 @@ class SystemScanTab(QWidget):
         self.system_info.disk_free_gb = round(free_disk, 1)
         self.system_info.disk_type = disk_type
         self.system_info.disk_model = disk_model
-        self._update_disk_section()
+        self._add_group(self._make_disk_group())
 
-        self.progress.setValue(90)
+        self.progress.setValue(85)
         from llmtuner.core.system_info import get_pcie_version
         self.system_info.pcie_version = get_pcie_version()
+
+        self.progress.setValue(95)
+        from llmtuner.core.system_info import get_bios_info, get_display_info, get_sound_info, get_network_info
+        bios = get_bios_info()
+        self.system_info.bios_vendor = bios.get("vendor", "Unknown")
+        self.system_info.bios_version = bios.get("version", "Unknown")
+        self.system_info.bios_date = bios.get("date", "Unknown")
+        self._add_group(self._make_bios_group())
+
+        display = get_display_info()
+        self.system_info.display_resolution = display.get("resolution", "N/A")
+        self.system_info.display_bits = display.get("bits", "N/A")
+        self.system_info.display_hz = display.get("hz", "N/A")
+        self._add_group(self._make_display_group())
+
+        sound = get_sound_info()
+        self.system_info.sound_device = sound
+        self._add_group(self._make_sound_group())
+
+        network = get_network_info()
+        self.system_info.network_adapter = network.get("name", "Unknown")
+        self.system_info.network_speed = network.get("speed", "Unknown")
+        self.system_info.network_ipv4 = network.get("ipv4", "Unknown")
+        self._add_group(self._make_network_group())
 
         self.progress.setValue(100)
         self.scan_label.setText("Scan complete!")
         self.scan_btn.setEnabled(True)
-
         QTimer.singleShot(500, self.progress.hide)
         self.scan_complete.emit(self.system_info)
 
-    def _make_pair(self, label: str, value: str):
-        l = QLabel(f"{label}:")
+    def _add_group(self, group):
+        self.scroll_layout.insertWidget(self.scroll_layout.count() - 1, group)
+
+    def _make_pair(self, label, value):
+        l = QLabel(str(label) + ":")
         l.setStyleSheet("color: #555;")
         v = QLabel(str(value) if value else "N/A")
         v.setStyleSheet("font-weight: bold; color: #2d5f8a;")
         return l, v
 
-    def _update_cpu_section(self):
+    def _make_cpu_group(self):
         cpu = self.system_info.cpu
         group = QGroupBox("CPU")
         grid = QGridLayout()
         grid.setSpacing(4)
-
         pairs = [
             ("Model", cpu.model),
             ("Vendor", cpu.vendor),
@@ -135,17 +173,15 @@ class SystemScanTab(QWidget):
             lbl, v = self._make_pair(label, val)
             grid.addWidget(lbl, i, 0, Qt.AlignLeft | Qt.AlignTop)
             grid.addWidget(v, i, 1, Qt.AlignLeft)
-
         group.setLayout(grid)
-        self._add_widget(group, 0, 0, 1, 2)
+        return group
 
-    def _update_gpu_section(self):
-        gpus = self.system_info.gpu
-        for idx, gpu in enumerate(gpus):
-            group = QGroupBox(f"GPU {idx} - {gpu.vendor}")
+    def _make_gpu_groups(self):
+        groups = []
+        for idx, gpu in enumerate(self.system_info.gpu):
+            group = QGroupBox(f"GPU {idx} — {gpu.vendor}")
             grid = QGridLayout()
             grid.setSpacing(4)
-
             pairs = [
                 ("Model", gpu.model),
                 ("Architecture", gpu.architecture),
@@ -156,35 +192,33 @@ class SystemScanTab(QWidget):
                 ("CUDA Cores", str(gpu.core_count) if gpu.core_count else "N/A"),
                 ("Clock Speed", f"{gpu.clock_mhz} MHz" if gpu.clock_mhz else "N/A"),
                 ("Memory BW", f"{gpu.memory_bandwidth_gbps} GB/s" if gpu.memory_bandwidth_gbps else "N/A"),
-                ("Driver", gpu.driver_version),
+                ("Driver Version", gpu.driver_version),
+                ("PCIe", self.system_info.pcie_version),
             ]
             for i, (label, val) in enumerate(pairs):
                 lbl, v = self._make_pair(label, val)
                 grid.addWidget(lbl, i, 0, Qt.AlignLeft | Qt.AlignTop)
                 grid.addWidget(v, i, 1, Qt.AlignLeft)
-
             group.setLayout(grid)
-            self._add_widget(group, idx + 1, 0, 1, 2)
-
-        if not gpus:
+            groups.append(group)
+        if not groups:
             group = QGroupBox("GPU")
             vl = QVBoxLayout()
-            lbl = QLabel("No GPU detected - will use CPU inference")
+            lbl = QLabel("No GPU detected — will use CPU inference")
             lbl.setStyleSheet("color: #e67e22; font-weight: bold;")
             lbl.setAlignment(Qt.AlignCenter)
             vl.addWidget(lbl)
             group.setLayout(vl)
-            self._add_widget(group, 1, 0, 1, 2)
+            groups.append(group)
+        return groups
 
-    def _update_ram_section(self):
+    def _make_ram_group(self):
         group = QGroupBox("Memory (RAM)")
         grid = QGridLayout()
         grid.setSpacing(4)
-
         usage_pct = 0
         if self.system_info.ram_total_gb > 0:
             usage_pct = int((self.system_info.ram_used_gb / self.system_info.ram_total_gb) * 100)
-
         pairs = [
             ("Total", f"{self.system_info.ram_total_gb} GB"),
             ("Available", f"{self.system_info.ram_available_gb} GB"),
@@ -196,34 +230,82 @@ class SystemScanTab(QWidget):
             lbl, v = self._make_pair(label, val)
             grid.addWidget(lbl, i, 0, Qt.AlignLeft | Qt.AlignTop)
             grid.addWidget(v, i, 1, Qt.AlignLeft)
-
         group.setLayout(grid)
-        self._add_widget(group, len(self.system_info.gpu) + 1, 2, 1, 2)
+        return group
 
-    def _update_disk_section(self):
-        group = QGroupBox("Disk & System")
+    def _make_disk_group(self):
+        group = QGroupBox("Disk & Storage")
         grid = QGridLayout()
         grid.setSpacing(4)
-
         pairs = [
             ("Disk Model", self.system_info.disk_model),
             ("Disk Type", self.system_info.disk_type),
             ("Total", f"{self.system_info.disk_total_gb} GB"),
             ("Free", f"{self.system_info.disk_free_gb} GB"),
-            ("PCIe Version", self.system_info.pcie_version),
-            ("OS", f"{self.system_info.os_name} {self.system_info.os_arch}"),
         ]
         for i, (label, val) in enumerate(pairs):
             lbl, v = self._make_pair(label, val)
             grid.addWidget(lbl, i, 0, Qt.AlignLeft | Qt.AlignTop)
             grid.addWidget(v, i, 1, Qt.AlignLeft)
-
         group.setLayout(grid)
-        self._add_widget(group, len(self.system_info.gpu) + 2, 0, 1, 2)
+        return group
 
-    def _add_widget(self, widget, row, col, row_span, col_span):
-        while self.content_area.count() > 0:
-            child = self.content_area.takeAt(0)
-            if child.widget():
-                child.widget().deleteLater()
-        self.content_area.addWidget(widget, row, col, row_span, col_span)
+    def _make_bios_group(self):
+        group = QGroupBox("BIOS / Firmware")
+        grid = QGridLayout()
+        grid.setSpacing(4)
+        pairs = [
+            ("BIOS Vendor", self.system_info.bios_vendor),
+            ("BIOS Version", self.system_info.bios_version),
+            ("BIOS Date", self.system_info.bios_date),
+        ]
+        for i, (label, val) in enumerate(pairs):
+            lbl, v = self._make_pair(label, val)
+            grid.addWidget(lbl, i, 0, Qt.AlignLeft | Qt.AlignTop)
+            grid.addWidget(v, i, 1, Qt.AlignLeft)
+        group.setLayout(grid)
+        return group
+
+    def _make_display_group(self):
+        group = QGroupBox("Display")
+        grid = QGridLayout()
+        grid.setSpacing(4)
+        pairs = [
+            ("Resolution", self.system_info.display_resolution),
+            ("Color Depth", self.system_info.display_bits),
+            ("Refresh Rate", self.system_info.display_hz),
+        ]
+        for i, (label, val) in enumerate(pairs):
+            lbl, v = self._make_pair(label, val)
+            grid.addWidget(lbl, i, 0, Qt.AlignLeft | Qt.AlignTop)
+            grid.addWidget(v, i, 1, Qt.AlignLeft)
+        group.setLayout(grid)
+        return group
+
+    def _make_sound_group(self):
+        group = QGroupBox("Sound")
+        grid = QGridLayout()
+        grid.setSpacing(4)
+        lbl, v = self._make_pair("Device", self.system_info.sound_device or "None detected")
+        grid.addWidget(lbl, 0, 0, Qt.AlignLeft)
+        grid.addWidget(v, 0, 1, Qt.AlignLeft)
+        group.setLayout(grid)
+        return group
+
+    def _make_network_group(self):
+        group = QGroupBox("Network & System")
+        grid = QGridLayout()
+        grid.setSpacing(4)
+        pairs = [
+            ("Adapter", self.system_info.network_adapter),
+            ("Speed", self.system_info.network_speed),
+            ("IPv4 Address", self.system_info.network_ipv4),
+            ("OS", f"{self.system_info.os_name} {self.system_info.os_arch}"),
+            ("OS Version", self.system_info.os_version),
+        ]
+        for i, (label, val) in enumerate(pairs):
+            lbl, v = self._make_pair(label, val)
+            grid.addWidget(lbl, i, 0, Qt.AlignLeft | Qt.AlignTop)
+            grid.addWidget(v, i, 1, Qt.AlignLeft)
+        group.setLayout(grid)
+        return group

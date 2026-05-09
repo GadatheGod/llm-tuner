@@ -3,13 +3,13 @@ from PySide6.QtWidgets import (
     QStatusBar, QFileDialog, QMessageBox
 )
 from PySide6.QtCore import Qt, QTimer
-from PySide6.QtGui import QAction, QIcon
+from PySide6.QtGui import QAction
 from llmtuner.ui.system_scan import SystemScanTab
 from llmtuner.ui.model_browser import ModelBrowserTab
 from llmtuner.ui.config_panel import ConfigPanelTab
 from llmtuner.ui.benchmark import BenchmarkTab
 from llmtuner.ui.export_launch import ExportLaunchTab
-from llmtuner.core.system_info import scan_system, SystemInfo
+from llmtuner.core.system_info import SystemInfo
 from llmtuner.utils.logger import logger
 
 
@@ -18,7 +18,7 @@ class MainWindow(QMainWindow):
         super().__init__()
         self.setWindowTitle("LLM-Tuner v1.0")
         self.setMinimumSize(1100, 700)
-        self.resize(1200, 800)
+        self.resize(1300, 850)
 
         self.system_info = None
         self.selected_model = None
@@ -28,18 +28,15 @@ class MainWindow(QMainWindow):
         self._build_menu()
         self._build_tabs()
         self._build_statusbar()
-
         QTimer.singleShot(100, self._initial_scan)
 
     def _build_menu(self):
         menubar = self.menuBar()
-
         file_menu = menubar.addMenu("&File")
         scan_action = QAction("&Scan System", self)
         scan_action.setShortcut("Ctrl+S")
         scan_action.triggered.connect(self._rescan_system)
         file_menu.addAction(scan_action)
-
         file_menu.addSeparator()
         exit_action = QAction("E&xit", self)
         exit_action.setShortcut("Ctrl+Q")
@@ -51,10 +48,12 @@ class MainWindow(QMainWindow):
         open_model_action.setShortcut("Ctrl+O")
         open_model_action.triggered.connect(self._open_model_file)
         tools_menu.addAction(open_model_action)
-
         set_llama_path_action = QAction("Set llama.cpp &Path...", self)
         set_llama_path_action.triggered.connect(self._set_llama_path)
         tools_menu.addAction(set_llama_path_action)
+        auto_detect_action = QAction("Auto-&Detect Engine Paths", self)
+        auto_detect_action.triggered.connect(self._auto_detect)
+        tools_menu.addAction(auto_detect_action)
 
         help_menu = menubar.addMenu("&Help")
         about_action = QAction("&About LLM-Tuner", self)
@@ -63,8 +62,8 @@ class MainWindow(QMainWindow):
 
     def _build_tabs(self):
         self.tab_widget = QTabWidget()
-        self.tab_widget.setTabsClosable(False)
         self.tab_widget.setMovable(True)
+        self.tab_widget.setTabPosition(QTabWidget.North)
 
         self.system_tab = SystemScanTab()
         self.system_tab.scan_complete.connect(self._on_scan_complete)
@@ -86,11 +85,12 @@ class MainWindow(QMainWindow):
         self.tab_widget.addTab(self.export_tab, "Export & Launch")
 
         self.setCentralWidget(self.tab_widget)
+        self.tab_widget.setCurrentIndex(0)
 
     def _build_statusbar(self):
         self.statusbar = QStatusBar()
         self.setStatusBar(self.statusbar)
-        self.statusbar.showMessage("Ready")
+        self.statusbar.showMessage("Ready - scan your system to begin")
 
     def _initial_scan(self):
         self.system_tab.start_scan()
@@ -101,20 +101,27 @@ class MainWindow(QMainWindow):
     def _on_scan_complete(self, system_info: SystemInfo):
         self.system_info = system_info
         logger.info(f"System scan complete: {len(system_info.gpu)} GPU(s), {system_info.cpu.logical_cores} CPU cores, {system_info.ram_total_gb}GB RAM")
-        self.statusbar.showMessage(f"System scanned: {system_info.cpu.model} | {system_info.gpu[0].model if system_info.gpu else 'No GPU'}")
-
+        gpu_str = system_info.gpu[0].model if system_info.gpu else "No GPU"
+        vram_str = f"({system_info.gpu[0].vram_total_mb} MB)" if system_info.gpu else ""
+        self.statusbar.showMessage(f"System scanned: {system_info.cpu.model} | {gpu_str} {vram_str}")
         self.model_tab.update_system_info(system_info)
+        self.config_tab.system_info = system_info
 
     def _on_model_selected(self, model_data: dict):
         self.selected_model = model_data
         logger.info(f"Model selected: {model_data.get('name', 'Unknown')}")
-        self.statusbar.showMessage(f"Selected: {model_data.get('name', 'Unknown')}")
-
+        self.statusbar.showMessage(f"Selected: {model_data.get('name', 'Unknown')} - go to Configure tab")
         if self.system_info:
             self.config_tab.update_recommendation(self.system_info, model_data)
+        engine = model_data.get("engine", "llama.cpp")
+        if engine == "ollama":
+            self.bench_tab.ollama_radio.setChecked(True)
+        else:
+            self.bench_tab.llama_radio.setChecked(True)
 
     def _on_config_changed(self, config: dict):
         self.current_config = config
+        self.bench_tab.update_config(config)
         self.export_tab.update_config(config)
 
     def _on_benchmark_ready(self, result):
@@ -122,7 +129,7 @@ class MainWindow(QMainWindow):
         if result.error:
             self.statusbar.showMessage(f"Benchmark error: {result.error}")
         else:
-            self.statusbar.showMessage(f"Benchmark: {result.tokens_per_second:.1f} tok/s")
+            self.statusbar.showMessage(f"Benchmark: {result.tokens_per_second:.1f} tok/s - go to Export tab")
 
     def _open_model_file(self):
         path, _ = QFileDialog.getOpenFileName(
@@ -145,12 +152,15 @@ class MainWindow(QMainWindow):
             self.bench_tab.set_llama_cpp_path(path)
             self.statusbar.showMessage(f"llama.cpp path set: {path}")
 
+    def _auto_detect(self):
+        self.bench_tab._auto_detect_paths()
+
     def _show_about(self):
         QMessageBox.about(
             self, "About LLM-Tuner",
             "LLM-Tuner v1.0\n\n"
             "AI-powered LLM configuration optimizer for\n"
-            "llama.cpp, Ollama, and vLLM.\n\n"
-            "Scans your system, recommends optimal parameters,\n"
-            "runs benchmarks, and generates config files."
+            "llama.cpp and Ollama.\n\n"
+            "Scans hardware, recommends models, runs benchmarks,\n"
+            "and exports ready-to-run configurations."
         )

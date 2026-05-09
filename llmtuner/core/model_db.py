@@ -36,7 +36,8 @@ def search_models(
     limit: int = 20,
     use_cache: bool = True
 ) -> List[Dict]:
-    if use_cache:
+    # Only use cache for broad searches (no specific query typed)
+    if use_cache and not query.strip():
         cached = _get_cached()
         if cached:
             return _filter_models(cached, query, categories, max_params, limit)
@@ -105,12 +106,21 @@ def _process_hf_model(model: Dict) -> Dict:
 
     family = _infer_family(model_id)
 
+    params_raw = _parse_param_value(params)
+
+    # Calculate size_bytes per quantization level
+    quant_multipliers = {"q2_k": 0.22, "q3_k_m": 0.28, "q4_k_m": 0.4, "q5_k_m": 0.52, "q6_k": 0.6, "q8_0": 0.8, "f16": 1.6}
+    size_bytes = {}
+    for q, mult in quant_multipliers.items():
+        size_bytes[q] = int(params_raw * mult)
+
     return {
         "id": model_id,
         "name": name,
         "family": family,
         "params": params,
-        "params_raw": _parse_param_value(params),
+        "params_raw": params_raw,
+        "size_bytes": size_bytes,
         "tags": tags,
         "categories": _tags_to_categories(tags),
         "downloads": model.get("downloads", 0),

@@ -32,7 +32,7 @@ def recommend_config(
     profile: str = "balanced"
 ) -> Dict:
     params_raw = _parse_params(model_params)
-    gpu = system.gpu[0] if system.gpu else None
+    gpus = system.gpu if system.gpu else []
 
     config = {
         "profile": profile,
@@ -50,10 +50,12 @@ def recommend_config(
         "multiproc": False,
         "cache_type_k": "q4_0",
         "cache_type_v": "q4_0",
+        "gpu_count": len(gpus),
+        "gpu_names": [g.model for g in gpus] if gpus else [],
     }
 
-    if gpu:
-        config = _configure_gpu(gpu, params_raw, config, profile)
+    if gpus:
+        config = _configure_gpu(system, gpus, params_raw, config, profile)
     else:
         config = _configure_cpu(system.cpu, params_raw, config)
 
@@ -61,19 +63,21 @@ def recommend_config(
     return config
 
 
-def _configure_gpu(gpu: GPUInfo, params_raw: float, config: Dict, profile: str) -> Dict:
-    vram_mb = gpu.vram_total_mb or gpu.vram_free_mb
-    if not vram_mb:
+def _configure_gpu(system: SystemInfo, gpus: List[GPUInfo], params_raw: float, config: Dict, profile: str) -> Dict:
+    total_vram_mb = sum(g.vram_total_mb for g in gpus if g.vram_total_mb)
+    if not total_vram_mb:
         return config
 
-    if profile == "optimum":
-        vram_budget = vram_mb * 0.85
-    elif profile == "max_performance":
-        vram_budget = vram_mb * 0.95
-    else:
-        vram_budget = vram_mb * 0.90
+    best_gpu = max(gpus, key=lambda g: g.vram_total_mb or 0)
 
-    config["n_gpu_layers"] = -1
+    if profile == "optimum":
+        vram_budget = total_vram_mb * 0.85
+    elif profile == "max_performance":
+        vram_budget = total_vram_mb * 0.95
+    else:
+        vram_budget = total_vram_mb * 0.90
+
+    config["n_gpu_layers"] = 99
 
     quant_multiplier = 0.4
     model_size_mb = (params_raw * quant_multiplier / 1e9) * 1024
@@ -94,9 +98,9 @@ def _configure_gpu(gpu: GPUInfo, params_raw: float, config: Dict, profile: str) 
     else:
         config["quantization"] = "q5_k_m" if model_size_mb * 1.3 <= vram_budget else "q4_k_m"
 
-    if gpu.vendor == "NVIDIA" and gpu.compute_capability != "N/A":
+    if best_gpu.vendor == "NVIDIA" and best_gpu.compute_capability != "N/A":
         try:
-            cc = float(gpu.compute_capability)
+            cc = float(best_gpu.compute_capability)
             config["flash_attention"] = cc >= 8.0
         except ValueError:
             pass
@@ -188,6 +192,77 @@ def _next_power_of_2(n: int) -> int:
     return p
 
 
+def estimate_tok_per_sec(system: SystemInfo, model_params: str = "8B", quant: str = "q4_k_m") -> str:
+    """Estimate tokens/sec based on GPU arch + model size + quantization."""
+    gpus = system.gpu if system.gpu else []
+    params_raw = _parse_params(model_params)
+    quant_mult = QUANT_SIZES.get(quant, 0.4)
+    effective_params = params_raw * quant_mult / 1e9
+
+    # Multi-GPU scaling: approximate linear speedup up to 2 GPUs
+    gpu_count = len(gpus) if gpus else 0
+
+    if gpus and any(g.vram_total_mb > 0 for g in gpus):
+        best_gpu = max(gpus, key=lambda g: g.vram_total_mb or 0)
+        arch = best_gpu.architecture.lower()
+        if "ada" in arch or "rtx 40" in best_gpu.model.lower():
+            base = {"8": 120, "13": 80, "30": 40, "70": 18, "8x7": 35}
+        elif "ampere" in arch or "rtx 30" in best_gpu.model.lower():
+            base = {"8": 70, "13": 45, "30": 22, "70": 10, "8x7": 20}
+        elif "turing" in arch or "rtx 20" in best_gpu.model.lower():
+            base = {"8": 50, "13": 30, "30": 15, "70": 7, "8x7": 14}
+        elif "pascal" in arch:
+            base = {"8": 30, "13": 18, "30": 8, "70": 4, "8x7": 9}
+        elif "hopper" in arch or "h100" in best_gpu.model.lower():
+            base = {"8": 200, "13": 140, "30": 70, "70": 35, "8x7": 55}
+        elif "rdna" in arch or "amd" in best_gpu.vendor.lower():
+            base = {"8": 50, "13": 30, "30": 15, "70": 7, "8x7": 12}
+        else:
+            base = {"8": 40, "13": 25, "30": 12, "70": 6, "8x7": 10}
+
+        size_key = str(int(effective_params)) if effective_params < 10 else (
+            "30" if effective_params < 40 else "70"
+        )
+        if "8x" in best_gpu.model.lower() or "moe" in model_params.lower():
+            size_key = "8x7"
+
+        tok_s = base.get(size_key, base.get("8", 30))
+
+        # Quantization speed factor (capped at 1.5x for q2_k)
+        quant_speed = QUANT_SIZES.get(quant, 0.4)
+        base_mult = 0.4
+        if quant_speed > 0:
+            adj = base_mult / quant_speed
+            adj = min(adj, 1.5)  # cap: lower quant can't be infinitely faster
+            tok_s = int(tok_s * adj)
+
+        # Multi-GPU scaling factor
+        if gpu_count > 1:
+            tok_s = int(tok_s * (1 + (gpu_count - 1) * 0.5))
+
+        high = tok_s + int(tok_s * 0.3)
+        low = tok_s - int(tok_s * 0.3)
+        return f"{max(1,low)}-{high} tok/s"
+    else:
+        cpu = system.cpu
+        cores = cpu.physical_cores or 4
+        quant_speed = QUANT_SIZES.get(quant, 0.4)
+        base_mult = 0.4
+        if quant_speed > 0:
+            speed_adj = base_mult / quant_speed
+        else:
+            speed_adj = 1
+        if effective_params < 10:
+            base = max(2, cores * 0.8 * speed_adj)
+        elif effective_params < 40:
+            base = max(1, cores * 0.3 * speed_adj)
+        else:
+            base = max(1, cores * 0.15 * speed_adj)
+        high = int(base * 1.5)
+        low = int(base * 0.6)
+        return f"{max(1,low)}-{high} tok/s (CPU)"
+
+
 def recommend_models(
     system: SystemInfo,
     use_case: str = "chat",
@@ -210,16 +285,18 @@ def recommend_models(
 
 
 def _determine_max_params(system: SystemInfo) -> str:
-    gpu = system.gpu[0] if system.gpu else None
-    if gpu:
-        vram = gpu.vram_total_mb
-        if vram >= 24000:
+    gpus = system.gpu if system.gpu else []
+    if gpus:
+        total_vram = sum(g.vram_total_mb for g in gpus if g.vram_total_mb)
+        if total_vram >= 24000:
             return "70B"
-        elif vram >= 12000:
+        elif total_vram >= 16000:
+            return "34B"
+        elif total_vram >= 12000:
             return "16B"
-        elif vram >= 6000:
+        elif total_vram >= 8000:
             return "9B"
-        elif vram >= 4000:
+        elif total_vram >= 4000:
             return "8B"
         else:
             return "4B"
@@ -237,12 +314,12 @@ def _determine_max_params(system: SystemInfo) -> str:
 
 def _score_model(model: Dict, system: SystemInfo, cat: Dict) -> float:
     score = 100
-    gpu = system.gpu[0] if system.gpu else None
+    gpus = system.gpu if system.gpu else []
 
-    if gpu:
-        vram = gpu.vram_total_mb
+    if gpus:
+        total_vram_mb = sum(g.vram_total_mb for g in gpus if g.vram_total_mb)
         size = model.get("size_bytes", {}).get("q4_k_m", 0)
-        if size and size > vram * 1024 * 0.7:
+        if size and size > total_vram_mb * 1024 * 0.7:
             score -= 30
     else:
         ram = system.ram_total_gb
@@ -265,12 +342,12 @@ def _score_model(model: Dict, system: SystemInfo, cat: Dict) -> float:
 
 def _explain_score(score: float, model: Dict, system: SystemInfo) -> str:
     reasons = []
-    gpu = system.gpu[0] if system.gpu else None
+    gpus = system.gpu if system.gpu else []
 
-    if gpu:
-        vram = gpu.vram_total_mb
+    if gpus:
+        total_vram_mb = sum(g.vram_total_mb for g in gpus if g.vram_total_mb)
         size = model.get("size_bytes", {}).get("q4_k_m", 0)
-        if size and size <= vram * 1024 * 0.7:
+        if size and size <= total_vram_mb * 1024 * 0.7:
             reasons.append("Fits in VRAM (Q4)")
         else:
             reasons.append("May need smaller quant or CPU offload")
