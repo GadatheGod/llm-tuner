@@ -2,9 +2,7 @@
 echo Building LLM-Tuner with PyInstaller...
 echo.
 
-if not exist "dist" mkdir dist
-
-pyinstaller --onefile --name "LLM-Tuner" ^
+pyinstaller --onedir --name "LLM-Tuner" ^
     --add-data "llmtuner/data;llmtuner/data" ^
     --hidden-import PySide6.QtWidgets ^
     --hidden-import PySide6.QtCore ^
@@ -17,7 +15,7 @@ pyinstaller --onefile --name "LLM-Tuner" ^
 
 if %ERRORLEVEL% EQU 0 (
     echo.
-    echo Build successful! Executable: dist\LLM-Tuner.exe
+    echo Build successful! Run: dist\LLM-Tuner\LLM-Tuner.exe
     echo.
 ) else (
     echo.
