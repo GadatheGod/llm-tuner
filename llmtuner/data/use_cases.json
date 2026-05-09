@@ -1,0 +1,114 @@
+{
+  "categories": [
+    {
+      "id": "code",
+      "name": "Code Generation",
+      "description": "Writing, understanding, and debugging code",
+      "min_params": "7B",
+      "recommended_families": ["Codestral", "DeepSeek-Coder", "CodeLlama", "Qwen2.5-Coder", "Mistral"],
+      "context_need": "high",
+      "quantization": "q5",
+      "tags": ["code", "programming"]
+    },
+    {
+      "id": "creative_writing",
+      "name": "Creative Writing",
+      "description": "Stories, poems, screenplays, creative content",
+      "min_params": "7B",
+      "recommended_families": ["Mistral", "Llama-3", "Qwen", "Gemma", "Yi"],
+      "context_need": "medium",
+      "quantization": "q5",
+      "tags": ["creative", "writing", "fiction"]
+    },
+    {
+      "id": "chat",
+      "name": "General Chat",
+      "description": "Conversational AI, Q&A, daily assistance",
+      "min_params": "3B",
+      "recommended_families": ["Llama-3", "Phi-3", "Gemma", "Qwen", "Mistral"],
+      "context_need": "low",
+      "quantization": "q4",
+      "tags": ["chat", "conversational", "assistant"]
+    },
+    {
+      "id": "rag",
+      "name": "RAG / Knowledge",
+      "description": "Retrieval Augmented Generation, document QA, knowledge bases",
+      "min_params": "7B",
+      "recommended_families": ["Llama-3", "Gemma", "Qwen", "Mistral", "Nomic-Embed"],
+      "context_need": "high",
+      "quantization": "q4",
+      "tags": ["rag", "knowledge", "qa", "documents"]
+    },
+    {
+      "id": "translation",
+      "name": "Translation",
+      "description": "Multi-language translation, localization",
+      "min_params": "7B",
+      "recommended_families": ["NLLB", "Qwen", "Bloom", "Mistral"],
+      "context_need": "low",
+      "quantization": "q5",
+      "tags": ["translation", "multilingual", "nllb"]
+    },
+    {
+      "id": "math",
+      "name": "Math & Reasoning",
+      "description": "Math problems, logical reasoning, data analysis",
+      "min_params": "7B",
+      "recommended_families": ["DeepSeek-Math", "Llama-3", "Qwen-Math", "Mistral"],
+      "context_need": "medium",
+      "quantization": "q5",
+      "tags": ["math", "reasoning", "logic"]
+    },
+    {
+      "id": "roleplay",
+      "name": "Roleplay",
+      "description": "Character AI, storytelling personas",
+      "min_params": "7B",
+      "recommended_families": ["Llama-3", "Mistral", "Qwen", "Nous-Hermes"],
+      "context_need": "high",
+      "quantization": "q4",
+      "tags": ["roleplay", "character", "persona"]
+    },
+    {
+      "id": "summarization",
+      "name": "Summarization",
+      "description": "Text summarization, key point extraction",
+      "min_params": "3B",
+      "recommended_families": ["Llama-3", "Phi-3", "Gemma", "Qwen"],
+      "context_need": "high",
+      "quantization": "q4",
+      "tags": ["summary", "summarization", "extract"]
+    },
+    {
+      "id": "agent",
+      "name": "AI Agent",
+      "description": "Tool use, function calling, agentic workflows",
+      "min_params": "8B",
+      "recommended_families": ["Llama-3", "Qwen", "Mistral", "Hermes"],
+      "context_need": "medium",
+      "quantization": "q5",
+      "tags": ["agent", "tools", "function-calling"]
+    },
+    {
+      "id": "vision",
+      "name": "Vision / Multimodal",
+      "description": "Image understanding, vision-language tasks",
+      "min_params": "7B",
+      "recommended_families": ["LLaVA", "BakLLaVA", "Qwen-VL", "Yi-VL"],
+      "context_need": "medium",
+      "quantization": "q4",
+      "tags": ["vision", "image", "multimodal"]
+    },
+    {
+      "id": "fine_tune",
+      "name": "Fine-Tuning Advisor",
+      "description": "Recommend models suitable for fine-tuning",
+      "min_params": "7B",
+      "recommended_families": ["Llama-3", "Mistral", "Gemma", "Qwen"],
+      "context_need": "low",
+      "quantization": "q8",
+      "tags": ["fine-tune", "training", "adapter"]
+    }
+  ]
+}
