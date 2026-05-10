@@ -6,6 +6,7 @@ from PySide6.QtWidgets import (
 from PySide6.QtCore import Qt, QTimer, Signal
 from PySide6.QtGui import QFont
 from llmtuner.core.benchmark_runner import BenchmarkRunner, BenchmarkResult
+from llmtuner.core.benchmark_thread import BenchmarkThread
 from llmtuner.core.config_export import export_llama_cpp_config, export_ollama_modelfile
 from llmtuner.utils.persistence import set_pref, get_pref
 
@@ -21,7 +22,14 @@ class BenchmarkTab(QWidget):
         self.current_config = None
         self.selected_engine = "llama.cpp"
         self.runner = BenchmarkRunner(on_progress=self._on_progress)
+        self._thread = None
         self._build_ui()
+
+    def _init_thread(self):
+        self._thread = BenchmarkThread(self.runner, "llama")
+        self._thread.progress.connect(self._on_progress)
+        self._thread.result.connect(self._show_result)
+        self._thread.error.connect(lambda e: self.output_box.append(f"Error: {e}"))
 
     def _build_ui(self):
         layout = QVBoxLayout()
@@ -280,47 +288,36 @@ class BenchmarkTab(QWidget):
             self.output_box.append("\nNo engines found. Download llama.cpp or Ollama first.")
 
     def _run_benchmark(self):
-        self._start_bench()
-        try:
-            if self.selected_engine == "llama.cpp":
-                self._run_llama_bench()
+        if self._thread and self._thread.isRunning():
+            return
+        if self.selected_engine == "llama.cpp":
+            model_path = self.model_path_edit.text().strip()
+            if not model_path:
+                self.output_box.append("Please select a model file first.")
+                return
+            llama_path = self.engine_path_edit.text().strip()
+            if llama_path:
+                self.runner.set_llama_cpp_path(llama_path)
             else:
-                self._run_ollama_bench()
-        except Exception as e:
-            self.output_box.append(f"Error: {e}")
-        finally:
-            self._end_bench()
-
-    def _run_llama_bench(self):
-        model_path = self.model_path_edit.text().strip()
-        if not model_path:
-            self.output_box.append("Please select a model file first.")
-            return
-
-        llama_path = self.engine_path_edit.text().strip()
-        if llama_path:
-            self.runner.set_llama_cpp_path(llama_path)
+                saved = get_pref("llama_cpp_path", "")
+                if saved:
+                    self.runner.set_llama_cpp_path(saved)
+            config = self.current_config or {
+                "n_threads": 8, "n_ctx": 4096, "n_batch": 2048, "n_predict": 256,
+                "n_gpu_layers": 0, "flash_attention": False,
+            }
+            self._thread = BenchmarkThread(self.runner, "llama", model_path, config)
         else:
-            saved = get_pref("llama_cpp_path", "")
-            if saved:
-                self.runner.set_llama_cpp_path(saved)
-
-        config = self.current_config or {
-            "n_threads": 8,
-            "n_ctx": 4096, "n_batch": 2048, "n_predict": 256,
-            "n_gpu_layers": 0, "flash_attention": False,
-        }
-        config["n_threads"] = config.get("n_threads", 8)
-        result = self.runner.run_llama_cpp_benchmark(model_path, config)
-        self._show_result(result)
-
-    def _run_ollama_bench(self):
-        model_name = self.ollama_name_edit.text().strip()
-        if not model_name:
-            self.output_box.append("Please enter an Ollama model name (e.g., llama3).")
-            return
-        result = self.runner.run_ollama_benchmark(model_name)
-        self._show_result(result)
+            model_name = self.ollama_name_edit.text().strip()
+            if not model_name:
+                self.output_box.append("Please enter an Ollama model name (e.g., llama3).")
+                return
+            self._thread = BenchmarkThread(self.runner, "ollama", model_name)
+        self._thread.progress.connect(self._on_progress)
+        self._thread.result.connect(self._show_result)
+        self._thread.error.connect(lambda e: self.output_box.append(f"Error: {e}"))
+        self._thread.start()
+        self._start_bench()
 
     def _run_accuracy(self):
         model_path = self.model_path_edit.text().strip()
@@ -332,20 +329,22 @@ class BenchmarkTab(QWidget):
         result.config = config
         self._start_bench()
         self.progress.setFormat("Running accuracy test...")
-        try:
-            result = self.runner.run_accuracy_test(result)
-            self.accuracy_label.setText(
-                f"Accuracy: {result.accuracy_score:.0f}% ({result.accuracy_correct}/{result.accuracy_total})"
-            )
-            self.output_box.append(
-                f"\n=== Accuracy Test ===\n"
-                f"Score: {result.accuracy_score:.1f}% "
-                f"({result.accuracy_correct}/{result.accuracy_total} correct)"
-            )
-        except Exception as e:
-            self.output_box.append(f"Accuracy test error: {e}")
-        finally:
-            self._end_bench()
+        self._thread = BenchmarkThread(self.runner, "accuracy", result, config=config)
+        self._thread.progress.connect(self._on_progress)
+        self._thread.result.connect(self._on_accuracy_done)
+        self._thread.error.connect(lambda e: self.output_box.append(f"Accuracy test error: {e}"))
+        self._thread.start()
+
+    def _on_accuracy_done(self, result):
+        self.accuracy_label.setText(
+            f"Accuracy: {result.accuracy_score:.0f}% ({result.accuracy_correct}/{result.accuracy_total})"
+        )
+        self.output_box.append(
+            f"\n=== Accuracy Test ===\n"
+            f"Score: {result.accuracy_score:.1f}% "
+            f"({result.accuracy_correct}/{result.accuracy_total} correct)"
+        )
+        self._end_bench()
 
     def _show_result(self, result: BenchmarkResult):
         if result.error:
@@ -410,6 +409,7 @@ class BenchmarkTab(QWidget):
         self.progress_label.setText(msg)
 
     def _cancel(self):
-        self.runner.cancel()
+        if self._thread:
+            self._thread.cancel()
         self.output_box.append("Benchmark cancelled.")
         self._end_bench()

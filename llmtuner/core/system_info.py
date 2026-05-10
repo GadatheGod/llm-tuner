@@ -255,7 +255,14 @@ def _try_powershell_gpu() -> List[GPUInfo]:
                 continue
             g = GPUInfo()
             g.model = item.get("Name", "Unknown")
-            g.vendor = "NVIDIA" if "NVIDIA" in g.model else "AMD" if "AMD" in g.model or "Radeon" in g.model else "Intel" if "Intel" in g.model else "Unknown"
+            if "NVIDIA" in g.model:
+                g.vendor = "NVIDIA"
+            elif "AMD" in g.model or "Radeon" in g.model:
+                g.vendor = "AMD"
+            elif "Intel" in g.model or "Arc" in g.model:
+                g.vendor = "Intel"
+            else:
+                g.vendor = "Unknown"
             ram = item.get("AdapterRAM")
             if ram:
                 g.vram_total_mb = int(ram) // (1024 * 1024)
@@ -283,7 +290,14 @@ def _try_wmic_gpu() -> List[GPUInfo]:
             if len(parts) >= 2:
                 g = GPUInfo()
                 g.model = parts[0]
-                g.vendor = "NVIDIA" if "NVIDIA" in parts[0] else "AMD" if "AMD" in parts[0] or "Radeon" in parts[0] else "Intel" if "Intel" in parts[0] else "Unknown"
+                if "NVIDIA" in parts[0]:
+                    g.vendor = "NVIDIA"
+                elif "AMD" in parts[0] or "Radeon" in parts[0]:
+                    g.vendor = "AMD"
+                elif "Intel" in parts[0] or "Arc" in parts[0]:
+                    g.vendor = "Intel"
+                else:
+                    g.vendor = "Unknown"
                 if len(parts) >= 3 and parts[2]:
                     try:
                         g.vram_total_mb = int(parts[2]) // (1024 * 1024)

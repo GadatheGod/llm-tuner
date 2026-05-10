@@ -29,7 +29,9 @@ def export_ollama_modelfile(
     lines.append("")
 
     content = "\n".join(lines)
-    os.makedirs(os.path.dirname(output_path) or ".", exist_ok=True)
+    out_dir = os.path.dirname(output_path)
+    if out_dir:
+        os.makedirs(out_dir, exist_ok=True)
     with open(output_path, "w", encoding="utf-8") as f:
         f.write(content)
     return output_path
@@ -70,11 +72,13 @@ def export_llama_cpp_config(
     lines.append(f"{cmd}")
     lines.append("")
     lines.append("# Parameters summary:")
-    for k, v in sorted(model_config.items()):
+    for k, v in sorted((item for item in model_config.items() if not item[0].startswith("_")), key=lambda x: x[0]):
         lines.append(f"#   {k}: {v}")
 
     content = "\n".join(lines)
-    os.makedirs(os.path.dirname(output_path) or ".", exist_ok=True)
+    out_dir = os.path.dirname(output_path)
+    if out_dir:
+        os.makedirs(out_dir, exist_ok=True)
     with open(output_path, "w", encoding="utf-8") as f:
         f.write(content)
     return output_path
@@ -88,7 +92,9 @@ def export_json_config(
     import json
     config = model_config.copy()
     config["model_path"] = model_path
-    os.makedirs(os.path.dirname(output_path) or ".", exist_ok=True)
+    out_dir = os.path.dirname(output_path)
+    if out_dir:
+        os.makedirs(out_dir, exist_ok=True)
     with open(output_path, "w", encoding="utf-8") as f:
         json.dump(config, f, indent=2, default=str)
     return output_path
@@ -127,6 +133,14 @@ def _launch_llama_cpp(config: Dict, model_path: str) -> Optional[str]:
         cmd += ["-ngl", str(config["n_gpu_layers"])]
     if config.get("flash_attention"):
         cmd += ["-fa"]
+    if config.get("cache_type_k"):
+        cmd += ["--cache-type-k", config["cache_type_k"]]
+    if config.get("cache_type_v"):
+        cmd += ["--cache-type-v", config["cache_type_v"]]
+    if config.get("temperature"):
+        cmd += ["--temp", str(config["temperature"])]
+    if config.get("repeat_penalty"):
+        cmd += ["--repeat-penalty", str(config["repeat_penalty"])]
 
     logger.info(f"Launching: {' '.join(cmd)}")
     os.system(" ".join(cmd))

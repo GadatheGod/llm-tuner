@@ -238,6 +238,15 @@ class BenchmarkRunner:
         match = re.search(r"([\d.]+) -> ([\d.]+) tokens/second", text)
         if match:
             return float(match.group(2))
+        match = re.search(r"prompt eval rate: ([\d.]+)", text, re.IGNORECASE)
+        if match:
+            return float(match.group(1))
+        match = re.search(r"([\d.]+)\s*tokens/second.*prompt", text, re.IGNORECASE)
+        if match:
+            return float(match.group(1))
+        match = re.search(r"prompt.*?([\d.]+)\s*tokens?/sec", text, re.IGNORECASE)
+        if match:
+            return float(match.group(1))
         return 0.0
 
     def _estimate_tps(self, text: str) -> float:
@@ -246,3 +255,32 @@ class BenchmarkRunner:
             ms_per_token = float(match.group(1))
             return 1000.0 / ms_per_token if ms_per_token > 0 else 0.0
         return 0.0
+
+    def _parse_result(self, output: str, model: str, engine: str,
+                      config: Optional[Dict] = None) -> BenchmarkResult:
+        """Parse raw subprocess output into a BenchmarkResult.
+        
+        Used by both the synchronous runner and the background thread.
+        """
+        result = BenchmarkResult(model=model, engine=engine, config=config or {})
+        result.raw_output = output
+
+        tps = self._parse_tps(output, "token/s")
+        ptps = self._parse_prompt_tps(output)
+        result.tokens_per_second = tps
+        result.prompt_tokens_per_second = ptps
+
+        tokens_match = re.search(r"([\d,]+) tokens \(([\d.]+) tokens/second", output)
+        if tokens_match:
+            result.total_tokens = int(tokens_match.group(1).replace(",", ""))
+            if not result.tokens_per_second:
+                result.tokens_per_second = float(tokens_match.group(2))
+
+        p_match = re.search(r"p prompt evals?\s*([\d.]+) tokens", output)
+        if p_match:
+            result.prompt_tokens = int(float(p_match.group(1)))
+
+        if not result.tokens_per_second and engine == "ollama":
+            result.tokens_per_second = self._estimate_tps(output)
+
+        return result

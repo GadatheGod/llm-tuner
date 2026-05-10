@@ -6,6 +6,7 @@ from pathlib import Path
 from typing import List, Dict, Optional, Any
 
 import requests
+from llmtuner.core.constants import QUANT_SIZES
 
 CACHE_DIR = Path(os.path.expanduser("~/.llm-tuner/cache"))
 CACHE_FILE = CACHE_DIR / "hf_models.json"
@@ -43,7 +44,22 @@ def search_models(
             return _filter_models(cached, query, categories, max_params, limit)
 
     try:
-        search_query = query.strip() or "llama OR mistral OR qwen OR gemma OR phi"
+        raw_query = query.strip()
+        search_query = raw_query or "llama OR mistral OR qwen OR gemma OR phi"
+        # Use version-aware token extraction for HF search
+        if raw_query:
+            # Find version patterns like "3.6", "2.5" first
+            version_match = re.search(r'(\d+\.?\d*)', raw_query)
+            if version_match:
+                # Use model family + version for more specific HF query
+                tokens = re.findall(r'[a-z]+', raw_query.lower())
+                if tokens:
+                    family = tokens[0]
+                    search_query = f"{family} {version_match.group(1)}"
+            else:
+                search_tokens = [t for t in re.findall(r'[a-z]+', raw_query.lower()) if len(t) >= 3]
+                if search_tokens:
+                    search_query = max(search_tokens, key=len)
         url = "https://huggingface.co/api/models"
         params = {
             "sort": "downloads",
@@ -78,7 +94,7 @@ def _infer_params_from_id(model_id: str) -> str:
 
 def _infer_family(model_id: str) -> str:
     id_lower = model_id.lower()
-    for family in ["llama-3", "llama-2", "qwen2.5-coder", "qwen2.5", "qwen2", "qwen", "mistral", "phi-3", "phi-2", "phi-1", "gemma-2", "gemma", "deepseek", "yi", "nomic", "codellama", "codestral"]:
+    for family in ["llama-3.1", "llama-3.2", "llama-3", "llama-2", "qwen3.6", "qwen3.5", "qwen3-coder-next", "qwen3-coder", "qwen3", "qwen2.5-coder", "qwen2.5", "qwen2", "qwen", "mistral", "phi-3.5", "phi-3", "phi-2", "phi-1", "gemma-2", "gemma", "deepseek", "yi", "nomic", "codellama", "codestral"]:
         if family in id_lower:
             return family.replace("-", " ").title().replace(".", "")
     return id_lower.split("/")[0].split("-")[0].title() if "/" in model_id else id_lower.split("-")[0].title()
@@ -108,10 +124,27 @@ def _process_hf_model(model: Dict) -> Dict:
 
     params_raw = _parse_param_value(params)
 
-    # Calculate size_bytes per quantization level
-    quant_multipliers = {"q2_k": 0.22, "q3_k_m": 0.28, "q4_k_m": 0.4, "q5_k_m": 0.52, "q6_k": 0.6, "q8_0": 0.8, "f16": 1.6}
+    # Infer architecture params from the architecture name string
+    arch_params = {}
+    architectures = card_data.get("architectures", [])
+    if architectures and isinstance(architectures, list) and architectures:
+        arch_name = str(architectures[0]).lower()
+        if "llama" in arch_name:
+            arch_params = {"n_layers": 32, "hidden_dim": 4096, "n_heads": 32, "n_kv_heads": 8}
+        elif "mistral" in arch_name:
+            arch_params = {"n_layers": 32, "hidden_dim": 4096, "n_heads": 32, "n_kv_heads": 8}
+        elif "gemma" in arch_name:
+            arch_params = {"n_layers": 28, "hidden_dim": 3584, "n_heads": 16, "n_kv_heads": 8}
+        elif "phi" in arch_name:
+            arch_params = {"n_layers": 24, "hidden_dim": 3072, "n_heads": 32, "n_kv_heads": 32}
+        elif "qwen" in arch_name or "qwen2" in arch_name:
+            arch_params = {"n_layers": 28, "hidden_dim": 3584, "n_heads": 28, "n_kv_heads": 4}
+        elif "deepseek" in arch_name:
+            arch_params = {"n_layers": 27, "hidden_dim": 4096, "n_heads": 32, "n_kv_heads": 8}
+
+    # Calculate size_bytes per quantization level (in bytes)
     size_bytes = {}
-    for q, mult in quant_multipliers.items():
+    for q, mult in QUANT_SIZES.items():
         size_bytes[q] = int(params_raw * mult)
 
     return {
@@ -121,6 +154,7 @@ def _process_hf_model(model: Dict) -> Dict:
         "params": params,
         "params_raw": params_raw,
         "size_bytes": size_bytes,
+        "arch_params": arch_params,
         "tags": tags,
         "categories": _tags_to_categories(tags),
         "downloads": model.get("downloads", 0),
@@ -183,8 +217,36 @@ def _filter_models(
     max_params_raw = _parse_param_value(max_params)
     results = []
     q = query.lower()
+    # Extract tokens preserving version patterns like "3.6", "2.5"
+    query_tokens = []
+    versions = []
+    if q:
+        # Find version patterns (e.g., "3.6", "2.5")
+        versions = re.findall(r'\d+\.\d+', q)
+        query_tokens.extend(versions)
+        # Alpha tokens >= 2 chars (model family names)
+        alpha_tokens = re.findall(r'[a-z]{2,}', q)
+        query_tokens.extend(alpha_tokens)
+        # Numeric tokens >= 2 chars (e.g., "32" from "32B")
+        num_tokens = re.findall(r'\d{2,}', q)
+        query_tokens.extend(num_tokens)
     for m in models:
-        if q and q not in m.get("name", "").lower() and q not in m.get("id", "").lower():
+        if query_tokens:
+            name_lower = m.get("name", "").lower()
+            id_lower = m.get("id", "").lower()
+            # If query has a version, require ALL tokens to match (AND logic)
+            # Otherwise use ANY token match (OR logic)
+            has_version = len(versions) > 0
+            if has_version:
+                if not all(tok in name_lower or tok in id_lower for tok in query_tokens):
+                    continue
+            else:
+                if not any(tok in name_lower or tok in id_lower for tok in query_tokens):
+                    continue
+        else:
+            results.append(m)
+            if len(results) >= limit:
+                break
             continue
         if categories:
             model_cats = m.get("categories", [])
@@ -229,6 +291,7 @@ def _get_local_models(
             "params_raw": m.get("params_raw", 0),
             "quantizations": m.get("quantizations", ["q4_k_m"]),
             "size_bytes": m.get("size_bytes", {}),
+            "arch_params": m.get("arch_params", {}),
             "context_default": m.get("context_default", 4096),
             "categories": m.get("categories", []),
             "hf_repo": m.get("hf_repo", m["id"]),

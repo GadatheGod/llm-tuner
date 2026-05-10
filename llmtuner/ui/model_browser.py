@@ -193,10 +193,11 @@ class ModelBrowserTab(QWidget):
 
             if self.system_info:
                 params = model.get("params", "8B")
-                tok_s = estimate_tok_per_sec(self.system_info, params, "q4_k_m")
+                tok_result = estimate_tok_per_sec(self.system_info, params, "q4_k_m")
+                tok_s = tok_result.get("gen", "N/A") if isinstance(tok_result, dict) else str(tok_result)
             else:
                 tok_s = "Scan first"
-            self.table.setItem(row, 7, QTableWidgetItem(tok_s))
+            self.table.setItem(row, 7, QTableWidgetItem(str(tok_s)))
 
             compat = "llama.cpp OK" if self.selected_engine == "llama.cpp" else "Ollama OK"
             compat_item = QTableWidgetItem(compat)
@@ -259,8 +260,9 @@ class ModelBrowserTab(QWidget):
         if model.get("quantizations"):
             lines.append(f"Quantizations: {', '.join(str(q) for q in model['quantizations'][:4])}")
         if self.system_info and model.get("params"):
-            tok = estimate_tok_per_sec(self.system_info, model["params"], "q4_k_m")
-            lines.append(f"Expected tok/s: {tok}")
+            tok_result = estimate_tok_per_sec(self.system_info, model["params"], "q4_k_m")
+            tok_val = tok_result.get("gen", "N/A") if isinstance(tok_result, dict) else str(tok_result)
+            lines.append(f"Expected tok/s: {tok_val}")
         lines.append(f"Engine: {self.selected_engine}")
         if model.get("hf_url"):
             lines.append(f"HF: {model['hf_url']}")

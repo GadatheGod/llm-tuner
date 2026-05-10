@@ -109,6 +109,11 @@ class SystemScanTab(QWidget):
         self.system_info.disk_model = disk_model
         self._add_group(self._make_disk_group())
 
+        self.progress.setValue(75)
+        warnings = self._detect_health_warnings()
+        if warnings:
+            self._add_group(self._make_warnings_group(warnings))
+
         self.progress.setValue(85)
         from llmtuner.core.system_info import get_pcie_version
         self.system_info.pcie_version = get_pcie_version()
@@ -301,11 +306,54 @@ class SystemScanTab(QWidget):
             ("Speed", self.system_info.network_speed),
             ("IPv4 Address", self.system_info.network_ipv4),
             ("OS", f"{self.system_info.os_name} {self.system_info.os_arch}"),
-            ("OS Version", self.system_info.os_version),
+       ("OS Version", self.system_info.os_version),
         ]
         for i, (label, val) in enumerate(pairs):
             lbl, v = self._make_pair(label, val)
             grid.addWidget(lbl, i, 0, Qt.AlignLeft | Qt.AlignTop)
             grid.addWidget(v, i, 1, Qt.AlignLeft)
         group.setLayout(grid)
+        return group
+
+    def _detect_health_warnings(self):
+        """Detect system health issues that could affect LLM performance."""
+        warnings = []
+        if not self.system_info:
+            return warnings
+        gpu = self.system_info.gpu
+        ram = self.system_info.ram_total_gb
+        disk_free = self.system_info.disk_free_gb
+        disk_type = self.system_info.disk_type
+
+        total_vram = sum(g.vram_total_mb for g in gpu) if gpu else 0
+        if total_vram > 0 and total_vram < 6144:
+            warnings.append(("Low VRAM", f"Only {total_vram // 1024}GB VRAM. Models larger than 7B will be very slow. Consider q2_k/q3_k quantization.", "#e74c3c"))
+        elif not gpu:
+            warnings.append(("No GPU", "No GPU detected. All inference will run on CPU, which is significantly slower.", "#e67e22"))
+
+        if ram > 0 and ram < 16:
+            warnings.append(("Low RAM", f"Only {ram}GB RAM. Large models (13B+) may not fit or will be very slow.", "#e74c3c"))
+
+        if disk_free > 0 and disk_free < 10:
+            warnings.append(("Low Disk Space", f"Only {disk_free:.0f}GB free. Need space for model files (typically 2-30GB each).", "#e67e22"))
+
+        if disk_type and ("HDD" in disk_type or "Mechanical" in disk_type):
+            warnings.append(("Slow Disk", "Using mechanical HDD. Model loading will be slow — consider SSD.", "#e67e22"))
+
+        return warnings
+
+    def _make_warnings_group(self, warnings):
+        """Create a warning group showing system health issues."""
+        group = QGroupBox("System Health")
+        layout = QVBoxLayout()
+        layout.setSpacing(6)
+        for title, message, color in warnings:
+            label = QLabel(f"{title}: {message}")
+            label.setStyleSheet(f"color: {color}; font-weight: bold; padding: 4px; border-left: 3px solid {color}; border-radius: 2px; padding-left: 8px;")
+            layout.addWidget(label)
+        if not warnings:
+            ok_label = QLabel("All checks passed — system is suitable for LLM inference.")
+            ok_label.setStyleSheet("color: #27ae60; font-weight: bold;")
+            layout.addWidget(ok_label)
+        group.setLayout(layout)
         return group
